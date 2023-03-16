@@ -28,15 +28,68 @@ pub mod pallet {
 	pub trait Config: frame_system::Config {
 		/// Because this pallet emits events, it depends on the runtime's definition of an event.
 		type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
+
+		#[pallet::constant]
+		type MaxBooleansPerAccount: Get<u32>;
 	}
 
 	// The pallet's runtime storage items.
 	// https://docs.substrate.io/main-docs/build/runtime-storage/
 	#[pallet::storage]
-	#[pallet::getter(fn something)]
 	// Learn more about declaring storage items:
 	// https://docs.substrate.io/main-docs/build/runtime-storage/#declaring-storage-items
-	pub type Something<T> = StorageValue<_, u32>;
+	pub type SingleFlipperValue<T> = StorageValue<_, ()>;
+
+	#[pallet::type_value]
+	pub fn PerAccountFlipperDefault<T: Config>() -> bool {
+		true
+	}
+
+	#[pallet::storage]
+	#[pallet::getter(fn per_account)]
+	pub type PerAccountFlipperValue<T: Config> = StorageMap<
+		_,
+		Blake2_128Concat,
+		T::AccountId,
+		bool,
+		ValueQuery,
+		PerAccountFlipperDefault<T>,
+	>;
+
+	#[pallet::type_value]
+	pub fn PerAccountMultipleBooleanDefault<T: Config>(
+	) -> BoundedVec<bool, T::MaxBooleansPerAccount> {
+		Default::default()
+	}
+
+	#[pallet::storage]
+	#[pallet::getter(fn per_account_multi)]
+	pub type PerAccountMultipleBooleanValues<T: Config> = StorageMap<
+		_,
+		Blake2_128Concat,
+		T::AccountId,
+		BoundedVec<bool, T::MaxBooleansPerAccount>,
+		ValueQuery,
+		PerAccountMultipleBooleanDefault<T>,
+	>;
+
+	#[pallet::type_value]
+	pub fn LikesOrDislikesDefault<T: Config>() -> bool {
+		false
+	}
+
+	#[pallet::storage]
+	#[pallet::getter(fn likes)]
+	pub type LikesOrDislikes<T: Config> = StorageDoubleMap<
+		_,
+		Blake2_128Concat,
+		T::AccountId,
+		Blake2_128Concat,
+		T::AccountId,
+		bool,
+		ValueQuery,
+		LikesOrDislikesDefault<T>,
+	>;
 
 	// Pallets use events to inform users when important changes are made.
 	// https://docs.substrate.io/main-docs/build/events-errors/
@@ -45,7 +98,21 @@ pub mod pallet {
 	pub enum Event<T: Config> {
 		/// Event documentation should end with an array that provides descriptive names for event
 		/// parameters. [something, who]
-		SomethingStored { something: u32, who: T::AccountId },
+		FlippedSingleValue {
+			current_state: bool,
+		},
+		FlippedAccountValue {
+			current_state: bool,
+		},
+		AccountBooleansUpdated {
+			booleans: BoundedVec<bool, T::MaxBooleansPerAccount>,
+		},
+
+		UpdatedLikesOrDislikes {
+			person1: T::AccountId,
+			person2: T::AccountId,
+			likes: bool,
+		},
 	}
 
 	// Errors inform users that something went wrong.
@@ -66,39 +133,85 @@ pub mod pallet {
 		/// storage and emits an event. This function must be dispatched by a signed extrinsic.
 		#[pallet::call_index(0)]
 		#[pallet::weight(10_000 + T::DbWeight::get().writes(1).ref_time())]
-		pub fn do_something(origin: OriginFor<T>, something: u32) -> DispatchResult {
+		pub fn flip_single_value(origin: OriginFor<T>) -> DispatchResult {
 			// Check that the extrinsic was signed and get the signer.
 			// This function will return an error if the extrinsic is not signed.
 			// https://docs.substrate.io/main-docs/build/origins/
-			let who = ensure_signed(origin)?;
+			let _who = ensure_signed(origin)?;
 
-			// Update storage.
-			<Something<T>>::put(something);
+			if SingleFlipperValue::<T>::exists() {
+				SingleFlipperValue::<T>::kill();
+				Self::deposit_event(Event::FlippedSingleValue { current_state: false });
+			} else {
+				SingleFlipperValue::<T>::put(());
+				Self::deposit_event(Event::FlippedSingleValue { current_state: true });
+			}
 
-			// Emit an event.
-			Self::deposit_event(Event::SomethingStored { something, who });
 			// Return a successful DispatchResultWithPostInfo
 			Ok(())
 		}
 
-		/// An example dispatchable that may throw a custom error.
-		#[pallet::call_index(1)]
-		#[pallet::weight(10_000 + T::DbWeight::get().reads_writes(1,1).ref_time())]
-		pub fn cause_error(origin: OriginFor<T>) -> DispatchResult {
-			let _who = ensure_signed(origin)?;
+		#[pallet::call_index(10)]
+		#[pallet::weight(10_000 + T::DbWeight::get().writes(1).ref_time())]
+		pub fn flip_account_value(origin: OriginFor<T>) -> DispatchResult {
+			let who = ensure_signed(origin)?;
 
-			// Read a value from storage.
-			match <Something<T>>::get() {
-				// Return an error if the value has not been set.
-				None => return Err(Error::<T>::NoneValue.into()),
-				Some(old) => {
-					// Increment the value read from storage; will error in the event of overflow.
-					let new = old.checked_add(1).ok_or(Error::<T>::StorageOverflow)?;
-					// Update the value in storage with the incremented result.
-					<Something<T>>::put(new);
-					Ok(())
-				},
-			}
+			/*
+			let mut account_value = Self::per_account(&who);
+			account_value = !account_value;
+
+			PerAccountFlipperValue::<T>::insert(&who, account_value);
+			 */
+
+			PerAccountFlipperValue::<T>::mutate(&who, |account_value| {
+				*account_value = !*account_value;
+			});
+
+			Self::deposit_event(Event::FlippedAccountValue {
+				current_state: Self::per_account(&who),
+			});
+
+			Ok(())
+		}
+
+		#[pallet::call_index(20)]
+		#[pallet::weight(10_000 + T::DbWeight::get().writes(1).ref_time())]
+		pub fn add_boolean_to_account(origin: OriginFor<T>, new_boolean: bool) -> DispatchResult {
+			let who = ensure_signed(origin)?;
+			let mut account_booleans = PerAccountMultipleBooleanValues::<T>::get(&who);
+
+			account_booleans
+				.try_push(new_boolean)
+				.map_err(|_| Error::<T>::StorageOverflow)?;
+
+			PerAccountMultipleBooleanValues::<T>::insert(&who, account_booleans);
+
+			Self::deposit_event(Event::AccountBooleansUpdated {
+				booleans: PerAccountMultipleBooleanValues::<T>::get(&who),
+			});
+
+			Ok(())
+		}
+
+		#[pallet::call_index(30)]
+		#[pallet::weight(10_000 + T::DbWeight::get().writes(1).ref_time())]
+		pub fn flip_like_or_dislike(
+			origin: OriginFor<T>,
+			other_person: T::AccountId,
+		) -> DispatchResult {
+			let who = ensure_signed(origin)?;
+
+			LikesOrDislikes::<T>::mutate(&who, &other_person, |current_status| {
+				*current_status = !*current_status;
+			});
+
+			Self::deposit_event(Event::UpdatedLikesOrDislikes {
+				person1: who.clone(),
+				person2: other_person.clone(),
+				likes: Self::likes(&who, &other_person),
+			});
+
+			Ok(())
 		}
 	}
 }
